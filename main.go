@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
+	"log"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -18,6 +19,8 @@ import (
 )
 
 type proxyConfig struct {
+	AWSToken     *string  `yaml:"AWSToken"`
+	AWSConfig    *string  `yaml:"AWSConfig"`
 	AWSRegion    *string  `yaml:"AWSRegion"`
 	AWSProfile   *string  `yaml:"AWSProfile"`
 	AWSKeyAccess *string  `yaml:"AWSAccessKey"`
@@ -48,25 +51,39 @@ func awsAuthorizationGet(connection *ecr.ECR) (*ecr.GetAuthorizationTokenOutput,
 }
 
 func awsRepositoryToReverseProxy(repository *ecr.DescribeRepositoriesOutput) (*httputil.ReverseProxy, error) {
-	target, err := url.Parse(*repository.Repositories[0].RepositoryUri)
-	if err != nil {
+	if target, err := url.Parse(*repository.Repositories[0].RepositoryUri); err != nil {
 		return nil, err
+	} else {
+		return httputil.NewSingleHostReverseProxy(target), nil
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	return proxy, nil
 }
 
 func awsConfigGet(config proxyConfig) (*aws.Config) {
 	awsConfig := aws.NewConfig()
+
 	if config.AWSRegion != nil && *config.AWSRegion != "" {
+		log.Println("Configuring AWS Region:", *config.AWSRegion)
 		awsConfig.WithRegion(*config.AWSRegion)
 	}
-	if config.AWSKeyAccess != nil && config.AWSKeySecret != nil && *config.AWSKeyAccess != "" && *config.AWSKeySecret != "" {
-		awsConfig.WithCredentials(credentials.NewStaticCredentials("theid", *config.AWSKeySecret, *config.AWSKeyAccess))
+
+	//awsConfig.WithCredentials(credentials.NewEnvCredentials())
+
+	if (
+		(config.AWSConfig  != nil && *config.AWSConfig  != "") ||
+		(config.AWSProfile != nil && *config.AWSProfile != "") ||
+	false) {
+		log.Println("Configuring AWS Config and Profile:", *config.AWSConfig, *config.AWSProfile)
+		awsConfig.WithCredentials(credentials.NewSharedCredentials(*config.AWSConfig, *config.AWSProfile))
 	}
-	if config.AWSProfile != nil && *config.AWSProfile != "" {
-		awsConfig.WithCredentials(credentials.NewSharedCredentials("~/.aws/credentials", *config.AWSProfile))
+
+	if (
+		(config.AWSKeyAccess != nil && config.AWSKeySecret != nil) &&
+		(*config.AWSKeyAccess != "" && *config.AWSKeySecret != "") &&
+	true) {
+		log.Println("Configuring AWS Access Key, AWS Secret Key and AWS Session Token:", *config.AWSKeyAccess, *config.AWSToken)
+		awsConfig.WithCredentials(credentials.NewStaticCredentials(*config.AWSKeyAccess, *config.AWSKeySecret, *config.AWSToken))
 	}
+
 	return awsConfig
 }
 
@@ -79,25 +96,34 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 	obj, exists := urlTokenMap[*req.URL]
+	if !exists {
+		log.Println("Auth Token for URL not found in cache (miss):", req.URL.String())
+	} else if time.Now().After(obj.validUntil) {
+		log.Println("Auth Token for URL is expired (expire):", req.URL.String(), obj.validUntil)
+	}
 	if !exists || time.Now().After(obj.validUntil) {
 		index        := 0
 		token        := *authorization.AuthorizationData[index].AuthorizationToken
+		expires      := *authorization.AuthorizationData[index].ExpiresAt
 		endpoint     := *authorization.AuthorizationData[index].ProxyEndpoint
 		repoURL, _   := url.Parse(endpoint)
 		obj = tokenDeadline {
-			validUntil: *authorization.AuthorizationData[index].ExpiresAt,
+			validUntil: expires,
 			endpoint: endpoint,
 			repoURL: *repoURL,
 			token: token,
 		}
 		urlTokenMap[*req.URL] = obj
+		log.Println("Caching token in memory for URL:", req.URL.String(), expires, endpoint, token[:16], "...")
+	} else {
+		log.Println("Auth token for URL is found in cache (hit):", req.URL.String())
 	}
 	req.Host     = obj.repoURL.Host
 	req.URL.Host = obj.repoURL.Host
 	req.Header.Set("Authorization", "Basic " + obj.token)
 	httputil.NewSingleHostReverseProxy(&obj.repoURL).ServeHTTP(resp, req)
 	decodedToken, err := base64.StdEncoding.DecodeString(obj.token)
-	println(
+	log.Println(
 		"Using:", obj.endpoint,
 		"with:", string(decodedToken[:16]),
 		"...", string(decodedToken[len(decodedToken)-16:]),
@@ -106,10 +132,40 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 	return
 }
 
+func setupListener(port *int) error {
+	http.HandleFunc("/", reqHandler)
+	var result error
+	var listen string
+	if (
+		(localConfig.TLSCertFile != nil && localConfig.TLSKeyFile != nil) &&
+		(*localConfig.TLSCertFile != "" && *localConfig.TLSKeyFile != "") &&
+	true) {
+		log.Println("TLS Configured:", *localConfig.TLSCertFile, *localConfig.TLSKeyFile)
+		if *port == 0 {
+			*port = 443
+			log.Println("Port is not specified. Using default:", *port)
+		}
+		listen = fmt.Sprintf(":%d", *port)
+		result = http.ListenAndServeTLS(listen,
+			*localConfig.TLSCertFile,
+			*localConfig.TLSKeyFile,
+			nil)
+	} else {
+		if *port == 0 {
+			*port = 80
+			log.Println("Port is not specified. Using default:", *port)
+		}
+		listen = fmt.Sprintf(":%d", *port)
+		result = http.ListenAndServe(listen, nil)
+	}
+	return result
+}
+
 func main() {
 	port                    := flag.Int("port",          0, "Listen Port")
 	config                  := flag.String("config",    "", "Configuration (YAML) file to read from")
 	endpoint                := flag.String("endpoint",  "", "AWS ECR registry canonical URL")
+	localConfig.AWSConfig    = flag.String("awsconfig", "", "AWS CLI credentials file")
 	localConfig.AWSRegion    = flag.String("region",    "", "AWS region")
 	localConfig.AWSProfile   = flag.String("profile",   "", "AWS profile name")
 	localConfig.AWSKeyAccess = flag.String("accesskey", "", "AWS access key")
@@ -131,25 +187,6 @@ func main() {
 		}
 		localConfig.AWSEndpoint = parsedURL
 	}
-	http.HandleFunc("/", reqHandler)
-	var result error
-	var listen string
-	if localConfig.TLSCertFile != nil && localConfig.TLSKeyFile != nil && *localConfig.TLSCertFile != "" && *localConfig.TLSKeyFile != "" {
-		if *port == 0 {
-			*port = 443
-		}
-		listen = fmt.Sprintf(":%d", *port)
-		result = http.ListenAndServeTLS(listen,
-			*localConfig.TLSCertFile,
-			*localConfig.TLSKeyFile,
-			nil)
-	} else {
-		if *port == 0 {
-			*port = 80
-		}
-		listen = fmt.Sprintf(":%d", *port)
-		result = http.ListenAndServe(listen, nil)
-	}
-	fmt.Println(result)
+	fmt.Println(setupListener(port))
 	return
 }
