@@ -88,13 +88,6 @@ func awsConfigGet(config proxyConfig) (*aws.Config) {
 }
 
 func reqHandler(resp http.ResponseWriter, req *http.Request) {
-	awsSession := session.Must(session.NewSession())
-	connection := ecr.New(awsSession, awsConfigGet(localConfig))
-	authorization, err := awsAuthorizationGet(connection)
-	if err != nil {
-		resp.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	obj, exists := urlTokenMap[*req.URL]
 	if !exists {
 		log.Println("Auth Token for URL not found in cache (miss):", req.URL.String())
@@ -102,6 +95,13 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 		log.Println("Auth Token for URL is expired (expire):", req.URL.String(), obj.validUntil)
 	}
 	if !exists || time.Now().After(obj.validUntil) {
+		awsSession := session.Must(session.NewSession())
+		connection := ecr.New(awsSession, awsConfigGet(localConfig))
+		authorization, err := awsAuthorizationGet(connection)
+		if err != nil {
+			resp.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		index        := 0
 		token        := *authorization.AuthorizationData[index].AuthorizationToken
 		expires      := *authorization.AuthorizationData[index].ExpiresAt
@@ -122,7 +122,7 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 	req.URL.Host = obj.repoURL.Host
 	req.Header.Set("Authorization", "Basic " + obj.token)
 	httputil.NewSingleHostReverseProxy(&obj.repoURL).ServeHTTP(resp, req)
-	decodedToken, err := base64.StdEncoding.DecodeString(obj.token)
+	decodedToken, _ := base64.StdEncoding.DecodeString(obj.token)
 	log.Println(
 		"Using:", obj.endpoint,
 		"with:", string(decodedToken[:16]),
