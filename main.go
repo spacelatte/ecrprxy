@@ -19,6 +19,7 @@ import (
 )
 
 type proxyConfig struct {
+	Port         *int     `yaml:"port"`
 	AWSToken     *string  `yaml:"AWSToken"`
 	AWSConfig    *string  `yaml:"AWSConfig"`
 	AWSRegion    *string  `yaml:"AWSRegion"`
@@ -163,7 +164,7 @@ func setupListener(port *int) error {
 }
 
 func main() {
-	port                    := flag.Int("port",          0, "Listen Port")
+	localConfig.Port         = flag.Int("port",          0, "Listen Port")
 	config                  := flag.String("config",    "", "Configuration (YAML) file to read from")
 	endpoint                := flag.String("endpoint",  "", "AWS ECR registry canonical URL")
 	localConfig.AWSToken     = flag.String("token",     "", "AWS session token")
@@ -189,6 +190,6 @@ func main() {
 		}
 		localConfig.AWSEndpoint = parsedURL
 	}
-	fmt.Println(setupListener(port))
+	fmt.Println(setupListener(localConfig.Port))
 	return
 }
