@@ -133,9 +133,10 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 }
 
 func setupListener(port *int) error {
-	http.HandleFunc("/", reqHandler)
 	var result error
 	var listen string
+	awsConfigGet(localConfig)
+	http.HandleFunc("/", reqHandler)
 	if (
 		(localConfig.TLSCertFile != nil && localConfig.TLSKeyFile != nil) &&
 		(*localConfig.TLSCertFile != "" && *localConfig.TLSKeyFile != "") &&
@@ -165,6 +166,7 @@ func main() {
 	port                    := flag.Int("port",          0, "Listen Port")
 	config                  := flag.String("config",    "", "Configuration (YAML) file to read from")
 	endpoint                := flag.String("endpoint",  "", "AWS ECR registry canonical URL")
+	localConfig.AWSToken     = flag.String("token",     "", "AWS session token")
 	localConfig.AWSConfig    = flag.String("awsconfig", "", "AWS CLI credentials file")
 	localConfig.AWSRegion    = flag.String("region",    "", "AWS region")
 	localConfig.AWSProfile   = flag.String("profile",   "", "AWS profile name")
