@@ -10,5 +10,6 @@ RUN go build
 RUN go install
 
 FROM scratch
+COPY --from=build /etc/ssl/certs  /etc/ssl/certs
 COPY --from=build /go/bin/ecrprxy /ecrprxy
 ENTRYPOINT [ "/ecrprxy" ]
