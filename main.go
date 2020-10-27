@@ -5,11 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"time"
-	"log"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -100,7 +100,9 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 		connection := ecr.New(awsSession, awsConfigGet(localConfig))
 		authorization, err := awsAuthorizationGet(connection)
 		if err != nil {
+			log.Println("Auth token retrieval is failed with:", err)
 			resp.WriteHeader(http.StatusUnauthorized)
+			resp.Write([]byte(err.Error()))
 			return
 		}
 		index        := 0
