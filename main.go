@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -29,6 +30,8 @@ type proxyConfig struct {
 	AWSEndpoint  *url.URL `yaml:"AWSEndpoint"`
 	TLSCertFile  *string  `yaml:"TLSCertFile"`
 	TLSKeyFile   *string  `yaml:"TLSKeyFile"`
+	Username     *string  `yaml:"username"`
+	Password     *string  `yaml:"password"`
 }
 
 type tokenDeadline struct {
@@ -66,8 +69,8 @@ func awsConfigGet(config proxyConfig) (*aws.Config) {
 		log.Println("Configuring AWS Region:", *config.AWSRegion)
 		awsConfig.WithRegion(*config.AWSRegion)
 	}
-
 	//awsConfig.WithCredentials(credentials.NewEnvCredentials())
+	awsConfig.WithCredentialsChainVerboseErrors(true)
 
 	if (
 		(config.AWSConfig  != nil && *config.AWSConfig  != "") ||
@@ -88,7 +91,25 @@ func awsConfigGet(config proxyConfig) (*aws.Config) {
 	return awsConfig
 }
 
+func awsConnectionGet(config proxyConfig) (*session.Session, *ecr.ECR) {
+		awsSession := session.Must(session.NewSession())
+		connection := ecr.New(awsSession, awsConfigGet(localConfig))
+		return awsSession, connection
+}
+
 func reqHandler(resp http.ResponseWriter, req *http.Request) {
+	if (
+		(localConfig.Username != nil && localConfig.Password != nil) &&
+		(*localConfig.Username != "" && *localConfig.Password != "") &&
+	true) {
+		user, pass, state := req.BasicAuth()
+		if !state || user != *localConfig.Username || pass != *localConfig.Password {
+			log.Println("Rejecting invalid authentication from:", req.RemoteAddr, "state:", state, "user:", user)
+			resp.WriteHeader(http.StatusForbidden)
+			resp.Write([]byte(strconv.FormatBool(state)))
+			return
+		}
+	}
 	obj, exists := urlTokenMap[*req.URL]
 	if !exists {
 		log.Println("Auth Token for URL not found in cache (miss):", req.URL.String())
@@ -96,8 +117,7 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 		log.Println("Auth Token for URL is expired (expire):", req.URL.String(), obj.validUntil)
 	}
 	if !exists || time.Now().After(obj.validUntil) {
-		awsSession := session.Must(session.NewSession())
-		connection := ecr.New(awsSession, awsConfigGet(localConfig))
+		_, connection := awsConnectionGet(localConfig)
 		authorization, err := awsAuthorizationGet(connection)
 		if err != nil {
 			log.Println("Auth token retrieval is failed with:", err)
@@ -138,7 +158,17 @@ func reqHandler(resp http.ResponseWriter, req *http.Request) {
 func setupListener(port *int) error {
 	var result error
 	var listen string
-	awsConfigGet(localConfig)
+	log.Println("Testing AWS connection... (fail-fast)")
+	_, connection := awsConnectionGet(localConfig)
+	repositories, err := awsRepositoriesGet(connection)
+	if err != nil {
+		log.Println("AWS Connection failed! Error:", err.Error())
+		return err
+	}
+	log.Println("AWS Connection successful.")
+	for i, e := range repositories.Repositories {
+		log.Println("Repository:", "(", i, ")", *e.RepositoryName)
+	}
 	http.HandleFunc("/", reqHandler)
 	if (
 		(localConfig.TLSCertFile != nil && localConfig.TLSKeyFile != nil) &&
@@ -177,6 +207,8 @@ func main() {
 	localConfig.AWSKeySecret = flag.String("secretkey", "", "AWS secret key")
 	localConfig.TLSCertFile  = flag.String("certfile",  "", "TLS certificate file")
 	localConfig.TLSKeyFile   = flag.String("keyfile",   "", "TLS private key file")
+	localConfig.Username     = flag.String("username",  "", "Basic Auth Username (frontend)")
+	localConfig.Password     = flag.String("password",  "", "Basic Auth Password (frontend)")
 	flag.Parse()
 	if config != nil && *config != "" {
 		data, err := ioutil.ReadFile(*config)

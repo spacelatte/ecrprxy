@@ -19,6 +19,10 @@ Usage of ecrprxy:
 		Configuration (YAML) file to read from
 	-port int
 		Listen Port
+	-username string
+		Username for frontend authentication
+	-password string
+		Password for frontend authentication
 	-token string
 		AWS session token
 	-awsconfig string
@@ -43,6 +47,8 @@ Usage of ecrprxy:
 Example configuration file:
 ```yml
 port: 8000
+username: hello
+password: world
 AWSToken: ""
 AWSConfig: ~/.aws/credentials
 AWSRegion: eu-central-1
